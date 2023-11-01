@@ -12,7 +12,8 @@ import (
 
 // Глобальные переменные для того, чтобы впихнуть их во все щели
 var gBot *tgbotapi.BotAPI
-var gChatId int64
+
+//var gChatId int64
 
 var gUserInChat Users
 var gUsefulActivities = Activities{
@@ -27,6 +28,7 @@ var gRewards = Activities{
 	{"Food", "Сожрать чего-нибудь вкусного", 7},
 	{"Game", "Нагнуть нубов в контре", 10},
 }
+var chats = make(map[int64]*ChatState)
 
 // Константы, чтобы код красивенький был, да и по уму как-то
 const (
@@ -72,6 +74,10 @@ type Activity struct {
 	coins      uint16
 }
 type Activities []*Activity
+type ChatState struct {
+	ChatID int64
+	Users  map[int]*User
+}
 
 // Инициализация бота
 func init() {
@@ -114,18 +120,18 @@ func delay(seconds uint8) {
 }
 
 // Сообщение с задержкой
-func printSystemMessageWithDelay(delayInSec uint8, message string) {
-	msg := tgbotapi.NewMessage(gChatId, message)
+func printSystemMessageWithDelay(chatID int64, delayInSec uint8, message string) {
+	msg := tgbotapi.NewMessage(chatID, message)
 	gBot.Send(msg)
 	delay(delayInSec)
 }
 
 // Приветственное сообщение с задержкой
-func printIntro(update *tgbotapi.Update) {
-	printSystemMessageWithDelay(2, "Привет!"+EMOJI_SUNGLASSES)
-	printSystemMessageWithDelay(2, "Этот бот поможет тебе быть замотивированным")
-	printSystemMessageWithDelay(2, "Выполняй полезные задачи, зарабатывай монетки и потом трать их")
-	printSystemMessageWithDelay(3, "Еще какая-нибудь шляпа о боте, но мне лень писать")
+func printIntro(chatID int64, update *tgbotapi.Update) {
+	printSystemMessageWithDelay(chatID, 2, "Привет!"+EMOJI_SUNGLASSES)
+	printSystemMessageWithDelay(chatID, 2, "Этот бот поможет тебе быть замотивированным")
+	printSystemMessageWithDelay(chatID, 2, "Выполняй полезные задачи, зарабатывай монетки и потом трать их")
+	printSystemMessageWithDelay(chatID, 3, "Еще какая-нибудь шляпа о боте, но мне лень писать")
 }
 
 // Создание ряда кнопок встроенной клавиатуры
@@ -134,8 +140,8 @@ func getKeyboardRow(buttonText, buttonCode string) []tgbotapi.InlineKeyboardButt
 }
 
 // Выбор пропустить intro
-func askToPrintIntro() {
-	msg := tgbotapi.NewMessage(gChatId, "Во вступительном сообщение ты поймешь смысл этого бота, почитаем?")
+func askToPrintIntro(chatID int64) {
+	msg := tgbotapi.NewMessage(chatID, "Во вступительном сообщение ты поймешь смысл этого бота, почитаем?")
 
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		getKeyboardRow(BUTTON_TEXT_PRINT_INTRO, BUTTON_CODE_PRINT_INTRO),
@@ -145,8 +151,8 @@ func askToPrintIntro() {
 }
 
 // Отображение меню
-func showMenu() {
-	msg := tgbotapi.NewMessage(gChatId, "Выбери один из вариантов")
+func showMenu(chatID int64) {
+	msg := tgbotapi.NewMessage(chatID, "Выбери один из вариантов")
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		getKeyboardRow(BUTTON_TEXT_BALANCE, BUTTON_CODE_BALANCE),
 		getKeyboardRow(BUTTON_TEXT_USEFUL_ACTIVITIES, BUTTON_CODE_USEFUL_ACTIVITIES),
@@ -156,14 +162,14 @@ func showMenu() {
 }
 
 // Покажет баланс
-func showBalance(user *User) {
+func showBalance(chatID int64, user *User) {
 	msg := fmt.Sprintf("%s, твой кошелек пока пуст (бомжара сраный) %s \nСделай чё нить полезное уже, и заработай, тряпка!", user.name, EMOJI_DONT_KNOW)
 	if coins := user.coins; coins > 0 {
-		msg = fmt.Sprintf("%s,у тебя %d %s", user.name, EMOJI_COIN)
+		msg = fmt.Sprintf("%s,у тебя %d %s", user.name, coins, EMOJI_COIN)
 	}
-	gBot.Send(tgbotapi.NewMessage(gChatId, msg))
+	gBot.Send(tgbotapi.NewMessage(chatID, msg))
 
-	showMenu()
+	showMenu(chatID)
 
 }
 
@@ -187,19 +193,19 @@ func getUserFromUpdate(update *tgbotapi.Update) (user *User, found bool) {
 }
 
 // Извлекает информацию о пользователе из объекта update, проверяет, что событие типа CallbackQuery присутствует и не является нулевым, и затем сохраняет информацию о пользователе в глобальном списке gUserInChat
-func storeUserFromUpdate(update *tgbotapi.Update) (user *User, found bool) {
-	if callbackQueryIsMissing(update) {
+func storeUserFromUpdate(update *tgbotapi.Update, chatState *ChatState) (user *User, found bool) {
+	if update.CallbackQuery == nil {
 		return
 	}
 
 	from := update.CallbackQuery.From
 	user = &User{id: from.ID, name: strings.TrimSpace(from.FirstName + " " + from.LastName), coins: 0}
-	gUserInChat = append(gUserInChat, user)
+	chatState.Users[user.id] = user
 	return user, true
 }
 
 // Создает встроенную клавиатуру для бота в Telegram. Он берет список действий (activities), сообщение (message) и флаг isUseful, который указывает, полезное ли действие (если true, то отображает + перед монетами) или нет (если false, то отображает - перед монетами).
-func showActivities(activities Activities, message string, isUseful bool) {
+func showActivities(chatID int64, activities Activities, message string, isUseful bool) {
 	activitiesButtonsRows := make([]([]tgbotapi.InlineKeyboardButton), 0, len(activities)+1)
 	for _, activity := range activities {
 		activityDescription := ""
@@ -212,19 +218,21 @@ func showActivities(activities Activities, message string, isUseful bool) {
 	}
 	activitiesButtonsRows = append(activitiesButtonsRows, getKeyboardRow(BUTTON_TEXT_PRINT_MENU, BUTTON_CODE_PRINT_MENU))
 
-	msg := tgbotapi.NewMessage(gChatId, message)
+	msg := tgbotapi.NewMessage(chatID, message)
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(activitiesButtonsRows...)
 	gBot.Send(msg)
 }
 
 // Функция showUsefulActivities вызывает функцию showActivities для отображения полезных действий пользователю
-func showUsefulActivities() {
-	showActivities(gUsefulActivities, "Сделай что-нибудь полезное или вернись в меню", true)
+func showUsefulActivities(chatID int64) {
+	// Предполагается, что usefulActivities является глобальной переменной, содержащей полезные действия
+	showActivities(chatID, gUsefulActivities, "Выберите полезное действие:", true)
 }
 
 // Функция showRewards вызывает функцию showActivities для отображения вознаграждений пользователю.
-func showRewards() {
-	showActivities(gRewards, "Купи вознаграждение или вернись в меню", false)
+func showRewards(chatID int64) {
+	// Предполагается, что rewards является глобальной переменной, содержащей награды
+	showActivities(chatID, gRewards, "Выберите награду:", false)
 }
 
 // Используется для поиска действия в списке activities по заданному choiceCode. Она проходит по каждому элементу списка activities и сравнивает choiceCode с activity.code каждого действия. Если находит соответствие, то возвращает это действие (activity) и флаг true, указывая на успешное нахождение. Если не находит соответствия, возвращает nil и флаг false.
@@ -238,7 +246,7 @@ func findActivity(activities Activities, choiceCode string) (activity *Activity,
 }
 
 // Предназначена для обработки полезного действия пользователя. Она принимает два аргумента: activity, представляющий информацию о действии, и user, представляющий информацию о пользователе.
-func processUsefulActivity(activity *Activity, user *User) {
+func processUsefulActivity(activity *Activity, user *User, chatID int64) {
 	errorMsg := ""
 	if activity.coins == 0 {
 		errorMsg = fmt.Sprintf(`у активноси %s не указана стоимость`, activity.name)
@@ -253,12 +261,12 @@ func processUsefulActivity(activity *Activity, user *User) {
 		resultMessage = fmt.Sprintf(`%s, действие '%s' выполнено! %d %s поступило тебе на счет. Так держать! %s%s Теперь у тебя %d %s`,
 			user.name, activity.name, activity.coins, EMOJI_COIN, EMOJI_BICEPS, EMOJI_SUNGLASSES, user.coins, EMOJI_COIN,
 		)
-		gBot.Send(tgbotapi.NewMessage(gChatId, resultMessage))
+		gBot.Send(tgbotapi.NewMessage(chatID, resultMessage))
 	}
 }
 
 // Предназначена для обработки действия пользователя по получению награды. Она принимает два аргумента: activity, представляющий информацию о награде, и user, представляющий информацию о пользователе.
-func processReward(activity *Activity, user *User) {
+func processReward(activity *Activity, user *User, chatID int64) {
 	errorMsg := ""
 	if activity.coins == 0 {
 		errorMsg = fmt.Sprintf(`у вознаграждения %s не указана стоимость`, activity.name)
@@ -275,60 +283,82 @@ func processReward(activity *Activity, user *User) {
 		resultMessage = fmt.Sprintf(`%s, вознаграждение "%s" оплачено, приступай! %d %s было снято с твоего счета. Теперь у тебя %d %s`,
 			user.name, activity.name, activity.coins, EMOJI_COIN, user.coins, EMOJI_COIN)
 	}
-	gBot.Send(tgbotapi.NewMessage(gChatId, resultMessage))
+	gBot.Send(tgbotapi.NewMessage(chatID, resultMessage))
 }
 
 // Обработка действий пользователя, связанных со встроенной клавиатурой бота в Telegram
 func updateProcessing(update *tgbotapi.Update) {
-	user, found := getUserFromUpdate(update)
-	if !found {
-		user, found = storeUserFromUpdate(update)
-		if !found {
-			gBot.Send(tgbotapi.NewMessage(gChatId, "Не получилось идентифицировать пользователя"))
-			return
-		}
+	if update.CallbackQuery == nil {
+		return
 	}
+
+	chatID := update.CallbackQuery.Message.Chat.ID
+	userID := update.CallbackQuery.From.ID
+
+	chatState, exists := chats[chatID]
+	if !exists {
+		chatState = &ChatState{
+			ChatID: chatID,
+			Users:  make(map[int]*User),
+		}
+		chats[chatID] = chatState
+	}
+
+	user, exists := chatState.Users[userID]
+	if !exists {
+		user, _ = storeUserFromUpdate(update, chatState)
+	}
+
 	choiceCode := update.CallbackQuery.Data
-	log.Printf("[%T] %s", time.Now(), choiceCode)
+	log.Printf("[%s] %s", time.Now(), choiceCode)
 
 	switch choiceCode {
 	case BUTTON_CODE_BALANCE:
-		showBalance(user)
+		showBalance(chatID, user)
 	case BUTTON_CODE_USEFUL_ACTIVITIES:
-		showUsefulActivities()
+		showUsefulActivities(chatID)
 	case BUTTON_CODE_REWARDS:
-		showRewards()
+		showRewards(chatID)
 	case BUTTON_CODE_PRINT_INTRO:
-		printIntro(update)
-		showMenu()
+		printIntro(chatID, update)
+		showMenu(chatID)
 	case BUTTON_CODE_SKIP_INTRO:
-		showMenu()
+		showMenu(chatID)
 	case BUTTON_CODE_PRINT_MENU:
-		showMenu()
+		showMenu(chatID)
 	default:
 		if usefulActivity, found := findActivity(gUsefulActivities, choiceCode); found {
-			processUsefulActivity(usefulActivity, user)
+			processUsefulActivity(usefulActivity, user, chatID)
 
 			delay(2)
-			showUsefulActivities()
+			showUsefulActivities(chatID)
 			return
 		}
 
 		if reward, found := findActivity(gRewards, choiceCode); found {
-			processReward(reward, user)
+			processReward(reward, user, chatID)
 
 			delay(2)
-			showRewards()
+			showRewards(chatID)
 			return
 		}
 		log.Printf(`[%T]Неизвестный код "%s"!)`, time.Now(), choiceCode)
 		msg := fmt.Sprintf("%s,прости,я не знаю код", user.name)
-		gBot.Send(tgbotapi.NewMessage(gChatId, msg))
+		gBot.Send(tgbotapi.NewMessage(chatID, msg))
+
+	}
+}
+func startCommand(update *tgbotapi.Update) {
+	chatID := update.Message.Chat.ID
+	if _, exists := chats[chatID]; !exists {
+		chats[chatID] = &ChatState{
+			ChatID: chatID,
+			Users:  make(map[int]*User),
+		}
 	}
 }
 
 func main() {
-
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = UPDATE_CONFIG_TIMEOUT
 
@@ -338,14 +368,17 @@ func main() {
 	}
 
 	for update := range updates {
-		if isCallbackQuery(&update) {
+		if update.Message != nil && update.Message.IsCommand() {
+			switch update.Message.Command() {
+			case "start":
+				gChatId := update.Message.Chat.ID
+				log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
+				askToPrintIntro(gChatId)
+			default:
+				log.Printf("Неизвестная команда: %s", update.Message.Command())
+			}
+		} else if isCallbackQuery(&update) {
 			updateProcessing(&update)
-		} else if isStartMessage(&update) {
-
-			log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
-			gChatId = update.Message.Chat.ID
-			askToPrintIntro()
 		}
-
 	}
 }
